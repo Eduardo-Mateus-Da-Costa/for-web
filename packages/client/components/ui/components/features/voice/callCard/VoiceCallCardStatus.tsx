@@ -1,13 +1,8 @@
 import { Trans } from "@lingui/solid/macro";
-import {
-  createEffect,
-  createSignal,
-  onCleanup,
-  Show,
-} from "solid-js";
+import { createEffect, createSignal, onCleanup, Show } from "solid-js";
 import { styled } from "styled-system/jsx";
 
-import { ConnectionQuality, Track } from "livekit-client";
+import { ConnectionQuality } from "livekit-client";
 
 import { useVoice } from "@revolt/rtc";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
@@ -48,139 +43,54 @@ export function VoiceCallCardStatus(props: { pip?: boolean }) {
   });
 
   /**
-   * Busca o RTT WebRTC real.
+   * Usa o RTT do canal de sinalização do próprio LiveKit.
    *
-   * Prioriza o microfone. Se o browser não fornecer RTT nele,
-   * tenta screen share e câmera.
+   * SignalClient.rtt já é calculado pelo SDK em MILISSEGUNDOS a partir
+   * do ping/pong do WebSocket de sinalização. Portanto não multiplicamos
+   * por 1000.
+   *
+   * Isso representa melhor o "ping até o servidor" que queremos exibir
+   * do que os RTTs do RTCStatsReport observados neste ambiente.
    */
   createEffect(() => {
     const room = voice.room();
+    const connectionState = voice.state();
 
-    if (!room) {
+    if (!room || connectionState !== "CONNECTED") {
       setPing();
       return;
     }
 
+    setPing();
+
     let disposed = false;
 
-    const updatePing = async () => {
+    const updatePing = () => {
+      if (disposed) return;
+
       if (voice.state() !== "CONNECTED") {
-        if (!disposed) setPing();
+        setPing();
         return;
       }
 
-      try {
-        let roundTripTime: number | undefined;
+      const signalRtt = room.engine?.client?.rtt;
 
-        const microphone = voice.getMicrophoneTrack()?.audioTrack;
-
-        if (microphone) {
-          /*
-           * LocalAudioTrack.getSenderStats() procura RTT no outbound-rtp,
-           * mas Chromium normalmente o disponibiliza no remote-inbound-rtp.
-           * Usamos o RTCStatsReport bruto para obter o RTT também em voz pura.
-           */
-          const report = await microphone.getRTCStatsReport();
-
-          if (report) {
-            report.forEach((rawStat) => {
-              if (roundTripTime !== undefined) return;
-
-              const stat = rawStat as RTCStats & {
-                roundTripTime?: number;
-              };
-
-              if (
-                stat.type === "remote-inbound-rtp" &&
-                typeof stat.roundTripTime === "number" &&
-                Number.isFinite(stat.roundTripTime)
-              ) {
-                roundTripTime = stat.roundTripTime;
-              }
-            });
-
-            /*
-             * Fallback para o RTT do par ICE selecionado.
-             */
-            if (roundTripTime === undefined) {
-              report.forEach((rawStat) => {
-                if (roundTripTime !== undefined) return;
-
-                const stat = rawStat as RTCStats & {
-                  currentRoundTripTime?: number;
-                  nominated?: boolean;
-                  selected?: boolean;
-                };
-
-                if (
-                  stat.type === "candidate-pair" &&
-                  (stat.nominated === true || stat.selected === true) &&
-                  typeof stat.currentRoundTripTime === "number" &&
-                  Number.isFinite(stat.currentRoundTripTime)
-                ) {
-                  roundTripTime = stat.currentRoundTripTime;
-                }
-              });
-            }
-          }
-
-          /*
-           * Último fallback para a API simplificada do LiveKit.
-           */
-          if (roundTripTime === undefined) {
-            const stats = await microphone.getSenderStats();
-
-            if (
-              typeof stats?.roundTripTime === "number" &&
-              Number.isFinite(stats.roundTripTime)
-            ) {
-              roundTripTime = stats.roundTripTime;
-            }
-          }
-        }
-
-        if (roundTripTime === undefined) {
-          for (const source of [
-            Track.Source.ScreenShare,
-            Track.Source.Camera,
-          ]) {
-            const videoTrack =
-              room.localParticipant.getTrackPublication(source)?.videoTrack;
-
-            if (!videoTrack) continue;
-
-            const stats = await videoTrack.getSenderStats();
-
-            const withRtt = stats.find(
-              (stat) =>
-                typeof stat.roundTripTime === "number" &&
-                Number.isFinite(stat.roundTripTime),
-            );
-
-            if (withRtt?.roundTripTime !== undefined) {
-              roundTripTime = withRtt.roundTripTime;
-              break;
-            }
-          }
-        }
-
-        if (disposed) return;
-
-        setPing(
-          roundTripTime === undefined
-            ? undefined
-            : Math.max(0, Math.round(roundTripTime * 1000)),
-        );
-      } catch {
-        if (!disposed) setPing();
+      if (
+        typeof signalRtt === "number" &&
+        Number.isFinite(signalRtt) &&
+        signalRtt > 0
+      ) {
+        setPing(Math.round(signalRtt));
       }
     };
 
-    void updatePing();
+    updatePing();
 
-    const timer = window.setInterval(() => {
-      void updatePing();
-    }, 2000);
+    /*
+     * O SignalClient atualiza o RTT quando recebe pong do servidor.
+     * Aqui apenas refletimos o valor mais recente na UI.
+     */
+    const timer = window.setInterval(updatePing, 1000);
 
     onCleanup(() => {
       disposed = true;
@@ -233,19 +143,13 @@ export function VoiceCallCardStatus(props: { pip?: boolean }) {
     if (voice.state() !== "CONNECTED") return undefined;
 
     const pingText =
-      ping() === undefined
-        ? "Ping indisponível"
-        : `Ping: ${ping()} ms`;
+      ping() === undefined ? "Ping indisponível" : `Ping: ${ping()} ms`;
 
     return `${pingText} · Qualidade: ${quality()}`;
   };
 
   return (
-    <Status
-      status={voice.state()}
-      pip={props.pip}
-      title={title()}
-    >
+    <Status status={voice.state()} pip={props.pip} title={title()}>
       <Show
         when={voice.state() === "CONNECTED"}
         fallback={
@@ -262,9 +166,7 @@ export function VoiceCallCardStatus(props: { pip?: boolean }) {
           <SignalBar active={bars() >= 4} />
         </SignalBars>
 
-        <PingText>
-          {ping() === undefined ? "— ms" : `${ping()} ms`}
-        </PingText>
+        <PingText>{ping() === undefined ? "— ms" : `${ping()} ms`}</PingText>
       </Show>
     </Status>
   );
