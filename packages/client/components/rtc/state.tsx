@@ -220,6 +220,14 @@ class Voice {
       videoCaptureDefaults: {
         deviceId: this.#settings.preferredVideoDevice,
       },
+      publishDefaults: {
+        // DuduCDI: permite publicação de screen share em 1080p60.
+        screenShareEncoding: {
+          ...ScreenSharePresets.h1080fps30.encoding,
+          maxBitrate: 8_000_000,
+          maxFramerate: 60,
+        },
+      },
     });
 
     this.vidTracks = useTracks(
@@ -440,6 +448,17 @@ class Voice {
         fullName: `1080p 30FPS`,
         contentHint: "motion",
       };
+
+      qualities.ultra = {
+        name: "ultra",
+        resolution: {
+          ...ScreenSharePresets.h1080fps30.resolution,
+          frameRate: 60,
+        },
+        fullName: `1080p 60FPS`,
+        contentHint: "motion",
+      };
+
       const originalResolution = ScreenSharePresets.original.resolution;
       originalResolution.frameRate = 5;
       originalResolution.aspectRatio = 0;
@@ -506,13 +525,27 @@ class Voice {
       }
 
       try {
+        /*
+         * DuduCDI:
+         *
+         * O browser precisa receber 60 FPS já no getDisplayMedia().
+         * Se iniciarmos a captura em 30 FPS e aplicarmos 60 depois,
+         * Chromium pode manter a fonte limitada a ~30 FPS.
+         *
+         * Quando o seletor de qualidade será exibido, iniciamos com
+         * a maior capacidade disponível e depois reduzimos com
+         * applyConstraints() conforme a escolha do usuário.
+         */
+        const initialCaptureQuality =
+          this.#settings.screenShareQualityAsk && qualities.ultra
+            ? qualities.ultra
+            : qualities[this.#settings.screenShareQuality || "low"] ||
+              qualities.low!;
+
         const localTrack = await room.localParticipant.setScreenShareEnabled(
           true,
           {
-            resolution:
-              this.getEnabledScreenShareQualities()[
-                this.#settings.screenShareQuality || "low"
-              ]?.resolution,
+            resolution: initialCaptureQuality.resolution,
             audio: {
               autoGainControl: false,
               echoCancellation: false,
@@ -560,10 +593,10 @@ class Voice {
                         max: quality.resolution.width,
                       },
                 height:
-                  quality.resolution.width === 0
+                  quality.resolution.height === 0
                     ? undefined
                     : {
-                        ideal: quality.resolution.width,
+                        ideal: quality.resolution.height,
                         max: quality.resolution.height,
                       },
               });
