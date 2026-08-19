@@ -86,6 +86,8 @@ export function ParticipantTile(props: TileProps) {
   return (
     <Show when={!isScreenShare() || !isRemoteScreenShareMuted()}>
       <div
+        data-duducdi-participant-id={participant.identity}
+        data-duducdi-track-source={track.source}
         class={
           tile({
             speaking: !isScreenShare() && isSpeaking(),

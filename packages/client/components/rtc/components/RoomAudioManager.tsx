@@ -1,4 +1,4 @@
-import { createEffect, createMemo } from "solid-js";
+import { createEffect, createMemo, onCleanup } from "solid-js";
 import { AudioTrack, useTracks } from "solid-livekit-components";
 
 import { getTrackReferenceId, isLocal } from "@livekit/components-core";
@@ -12,6 +12,46 @@ import { useVoice } from "../state";
 export function RoomAudioManager() {
   const voice = useVoice();
   const state = useState();
+
+  /**
+   * Desktop integration: expose the exact same ScreenShare volume/mute
+   * state used by UserContextMenu and RoomAudioManager.
+   *
+   * This is deliberately tiny: the desktop fullscreen overlay should not
+   * guess which HTMLAudioElement belongs to a participant. It simply calls
+   * the same Voice store methods as the normal Stoat slider.
+   */
+  const desktopWindow = window as typeof window & {
+    __duducdiScreenShareAudio?: {
+      getVolume(userId: string): number;
+      setVolume(userId: string, volume: number): void;
+      getMuted(userId: string): boolean;
+      setMuted(userId: string, muted: boolean): void;
+    };
+  };
+
+  const desktopScreenShareAudio = {
+    getVolume: (userId: string) =>
+      state.voice.getScreenShareVolume(userId),
+    setVolume: (userId: string, volume: number) =>
+      state.voice.setScreenShareVolume(userId, volume),
+    getMuted: (userId: string) =>
+      state.voice.getScreenShareMuted(userId),
+    setMuted: (userId: string, muted: boolean) =>
+      state.voice.setScreenShareMuted(userId, muted),
+  };
+
+  desktopWindow.__duducdiScreenShareAudio =
+    desktopScreenShareAudio;
+
+  onCleanup(() => {
+    if (
+      desktopWindow.__duducdiScreenShareAudio ===
+      desktopScreenShareAudio
+    ) {
+      delete desktopWindow.__duducdiScreenShareAudio;
+    }
+  });
 
   const tracks = useTracks(
     [
